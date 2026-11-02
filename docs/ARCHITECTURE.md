@@ -47,7 +47,7 @@
   - `/data/media/0/tencent/MicroMsg` 及其下
 - **LIST 实现**：`find -L <dir> -mindepth1 -maxdepth1 -print0 | xargs -0 -r stat -L -c '%F<TAB>%s<TAB>%Y<TAB>%n'`
   （**格式串必须是真实 TAB 字节**，toybox stat 不解析 `\t` 转义；
-  `-L` 必须同时给 find 和 stat，否则 P3 symlink 会被识别成普通文件）
+  `-L` 必须同时给 find 和 stat，否则 symlink 会被识别成普通文件）
 - **TREE 实现**：同 LIST，但 `-mindepth 0` 递归整棵子树；BridgeFS 首次访问
   `/tencent/MicroMsg` 子树时一次预取，建立 `CHILDREN`（目录→子项）缓存，
   后续 3.7 万次目录查询全部命中内存。空目录也必须建空列表。
@@ -58,7 +58,7 @@
   清理 Tab 的 `d.a(String,FilenameFilter)` 已改接 `BridgeFS.deleteTree`。
 - **无 root 原版分支**：`BridgeFS.LOCAL_MODE = Build.VERSION.SDK_INT <= 29`；
   Android 5.0–10 直接走原版 File API（无需 root），Android 11+ 走桥。
-- **P3 symlink**：外部 image2/video/voice2/favorite/avatar 已指向 `/data/data/...` 内部原件；
+- **symlink 模式**：外部 image2/video/voice2/favorite/avatar 可指向 `/data/data/...` 内部原件；
   桥用 `find -L` 遍历、`stat -L` 取元数据，App 仍看到 `/storage/emulated/0/...` 路径。
 - **wxgf/HEVC**：图片内容以 `wxgf` + HEVC 裸流保存，BridgeFS 解析 SPS、用 MediaCodec 解码，
   再 YUV420 -> NV21 -> Bitmap。`lastModified` 把 stat 秒转换成毫秒。
@@ -132,11 +132,11 @@
 | 旧逐目录 LIST | 数分钟仍未完成 |
 | 照片 / 视频计数 | 12107 / 733 |
 | image2 / video 文件数 | 30616 / 1826 |
-| image2/video/voice2 体积 | 2.2G / 2.3G / 269M（副本共~4.8G, P3删） |
+| 外部副本策略 | 可选迁移为内部 symlink |
 | 桥dex体积 | ~11KB（含预取缓存） |
 | 微信内部库 | EnMicroMsg.db 等位于 `/data/data/com.tencent.mm/MicroMsg/bdcf.../` |
 | 微信版本 | 8.0.79 (versionCode 3200, targetSdk 34) |
-| P3 释放 | 约 4.8G（外部副本已删，改为 symlink） |
+| 空间释放 | 取决于原外部副本大小 |
 | PC微信4.0解密 | 29/29库, 主密钥=PBKDF2-SHA512(master,salt,256000) |
 
 ## 8. 环境与工具链（Arch Linux 原生, 在 tools/）

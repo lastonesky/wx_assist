@@ -9,14 +9,22 @@
 - Android 11–17：root 桥（KernelSU/Magisk），零复制读取微信内部数据
 - 一次 TREE 扫描、微信 8.0.x 新旧目录兼容
 - WXGF/HEVC 图片解码、日期修复、字号调整、隐藏失效升级入口
-- P3：外部 4.8G 副本改 symlink，启动自愈
+- 外部媒体副本改为内部 symlink，启动自愈
 - 清理统计适配微信 8.x；收藏夹不参与删除
 
 **要求**：
 - Android 5.0 – 17
 - Android 11+ 需要 root
-- Android 14+ 安装需 `--bypass-low-target-sdk-block`
+- Android 14+ 安装需 `--bypass-low-target-sdk-block`（示例见下）
 - 微信 8.0.x（能登录服务器的版本）；7.x 不专门适配
+
+**Android 14+ 安装示例**：
+
+```bash
+adb install -r -g --bypass-low-target-sdk-block "微信助手-改造版.apk"
+```
+
+Android 14 以下可去掉 `--bypass-low-target-sdk-block`。
 
 **无恶意代码的最简证明**：
 - 未新增任何权限、联网/上传逻辑或后台服务；新增代码只做本地文件访问和 root 文件桥

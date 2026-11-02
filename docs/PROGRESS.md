@@ -1,6 +1,6 @@
 # 微信助手拯救计划 — 进度与恢复手册
 
-> 更新时间：P2/P3 完成（TREE 预取、WXGF 解码、P3 symlink），微信 8.0.79
+> 更新时间：核心功能完成（TREE 预取、WXGF 解码、symlink 迁移），微信 8.0.79
 > 交付目录：`/home/ted/Projects/wx_assist`（只保留 docs + 原始APK + 改造APK）
 > 工程/工具目录：`~/tools/wx_assist/`（原 `E:/re/wx_assist`，已迁移 Arch Linux）
 > 本文档是断点续传入口 —— 回家后按「恢复步骤」逐条执行即可继续推进。
@@ -12,7 +12,7 @@
 APK 已在 Android 17（澎湃OS4，KernelSU）上安装运行，**零复制实时桥方案已上线**：
 App 扫描/清理/图片加载全部改道经 `BridgeFS → stdio 管道 → root 侧 wxbridge.sh`。
 **当前：照片 12109 / 视频 733，清理 798.77MB，图片查看器正常，日期/字号/设置已修。**
-全树 81831 条目通过一次 `TREE` 预取，实测约 1.2 秒；P3 已删除 4.8G 副本并改为 symlink。
+全树 81831 条目通过一次 `TREE` 预取，实测约 1.2 秒；外部副本已迁移为 symlink。
 
 ---
 
@@ -22,8 +22,8 @@ App 扫描/清理/图片加载全部改道经 `BridgeFS → stdio 管道 → roo
 |---|---|---|
 | A | APK 修复：删32位.so、8个native方法Java桩、debuggable、`--bypass-low-target-sdk-block` 安装、smali死代码bug(`:post_loop`) | ✅ 完成 |
 | B | root 通道：uid 10282 授 KSU；App 启动 `su -c rescue.sh`；PC侧 `adb shell run-as + su -c` | ✅ 完成 |
-| C-旧 | 数据桥 v1（复制方案）：4.8G 内部数据复制到外部 + bind mount | ✅ 已被桥方案替代；P3 已删除副本 |
-| C-新 | **零复制实时桥**（当前方案） | ✅ P2/P3 完成 |
+| C-旧 | 数据桥 v1（复制方案）：内部数据复制到外部 + bind mount | ✅ 已被桥方案替代 |
+| C-新 | **零复制实时桥**（当前方案） | ✅ 完成 |
 | D | 端到端验证 | 🔄 扫描/清理/图片/日期/HEVC 已通过；删除链待安全测试 |
 
 ### C-新 细分
@@ -31,9 +31,9 @@ App 扫描/清理/图片加载全部改道经 `BridgeFS → stdio 管道 → roo
 |---|---|---|
 | P0 本地构建 | ✅ | bridge 脚本+BridgeFS+d8+smali手术33处+apktool构建+multidex注入+签名，全部本地验证 |
 | P1 上机 | ✅ | 推脚本、rescue改纯诊断、测试文件、装APK、桥进程确认拉起、零崩溃 |
-| P2 UI验证 | ✅ | 照片 12109 / 视频 733，清理 798.77MB，HEVC/日期/字号/设置已修 |
-| P3 删副本 | ✅ | 4.8G 副本已删除；image2/video/voice2/favorite/avatar 已改为内部 symlink |
-| P4 收尾 | ⏳ | 手机端临时文件去留、文档定稿 |
+| UI验证 | ✅ | 照片 12109 / 视频 733，清理 798.77MB，HEVC/日期/字号/设置已修 |
+| 外部副本迁移 | ✅ | image2/video/voice2/favorite/avatar 已改为内部 symlink |
+| 收尾 | ⏳ | 手机端临时文件去留、文档定稿 |
 
 ---
 
@@ -44,8 +44,8 @@ uid=10282 (u0_a282)  com.wandoujia.ymir  已授予 KernelSU root（uid 重装会
 安装: ~/tools/wx_assist/workspace/bridge/signed/bridge-p0-inj-aligned-signed.apk (覆盖安装, rescue.keystore 签名, minSdk21, multidex)
 /data/local/tmp/wxbridge.sh          ← root桥服务 (stdio协议, 含 TREE, find -L, stat -L)
 /data/local/tmp/rescue.sh            ← v3纯诊断 (已停止sync!)
-/data/local/tmp/sync_all.sh          ← 旧同步脚本(已不被调用, P4可删)
-/data/local/tmp/appprobe.sh 等       ← 旧调试脚本(P4可删)
+/data/local/tmp/sync_all.sh          ← 旧同步脚本(已不被调用, 可删)
+/data/local/tmp/appprobe.sh 等       ← 旧调试脚本(可删)
 /data/data/com.wandoujia.ymir/files/{appprobe.sh,rescue.sh,app_probe.log}  ← App私有探针
 /sdcard/tencent/MicroMsg/            ← 合成树:
     ├── Cache/ xlog/ bdcf.../{image,music,sns}   ← bind mount (指向外部微信数据)
@@ -58,14 +58,13 @@ uid=10282 (u0_a282)  com.wandoujia.ymir  已授予 KernelSU root（uid 重装会
 微信内部目录权限: 已恢复 700/600 (隐私OK, 桥以root直读不需要chmod)
 ```
 
-**P3 已完成**：image2 2.2G + video 2.3G + voice2 269M + favorite + avatar ≈ 4.8G
-外部副本已删除，改为指向 `/data/data/com.tencent.mm/MicroMsg/bdcf.../` 的 symlink。
-桥端 `find -L` + `stat -L` 跟随 symlink，App 无感知；释放约 4.8G。
+**外部副本迁移已完成**：image2/video/voice2/favorite/avatar 已改为指向 `/data/data/com.tencent.mm/MicroMsg/bdcf.../` 的 symlink。
+桥端 `find -L` + `stat -L` 跟随 symlink，App 无感知；释放空间取决于原副本大小。
 微信 8.0.79 新增缓存通过 `~/tools/wx_assist/workspace/bridge/wechat8_cache_links.sh` 映射进旧清理分类，不复制数据。
 
 ---
 
-## 3. ✅ P2 修复记录（计数归零 + 扫描性能）
+## 3. ✅ 关键修复记录（计数归零 + 扫描性能）
 
 ### 3.1 计数归零：listFiles 多跳一个 TAB
 
@@ -107,9 +106,9 @@ image2 实际 54257 项，只返回 14744 项。
 
 数量差异说明：App 只统计带扩展名的媒体文件，image2 中大量 `th_*` 无扩展名缩略图不计入。
 
-### 3.5 P3 + UI/兼容性修复（已完成）
+### 3.5 symlink 迁移 + UI/兼容性修复（已完成）
 
-- **P3**：删除 4.8G 外部副本，image2/video/voice2/favorite/avatar 改为 symlink；
+- **外部副本迁移**：删除外部副本，image2/video/voice2/favorite/avatar 改为 symlink；
   桥端 `find -L` + `stat -L` 已修复 symlink 被识别成普通文件的问题。
 - **日期 1970**：`BridgeFS.lastModified()` 原先直接返回 `stat %Y` 秒，App 按毫秒解析；
   已改为 `* 1000`。照片按内部真实 mtime 分组，降序排列。
@@ -149,7 +148,7 @@ adb install -r -g --bypass-low-target-sdk-block \
 - 改动本体：`~/tools/wx_assist/workspace/apktool_out/smali/`
 - 可重跑脚本（含校验）：`python ~/tools/wx_assist/workspace/bridge/patch_scan.py`（若 apktool_out 被还原才需要）
 
-**P2 验证清单**：
+**验证清单**：
 1. ✅ 照片/视频计数非0（12109 / 733）
 2. ✅ 清理 Tab 出现大小（798.77MB；微信垃圾 756.31MB；收藏夹已排除）
 3. ✅ 点开照片 → 查看器显示（含 wxgf/HEVC）
@@ -158,17 +157,17 @@ adb install -r -g --bypass-low-target-sdk-block \
 
 ---
 
-## 4. 其余待办（P2 尾部 / P3 / P4）
+## 4. 其余待办（收尾）
 
 - [ ] **视频播放**：`VideoPlayCtrl:533 MediaPlayer.setDataSource(String)` 单点未接桥。
       方案候选（需用户拍板）：a) fd流式（零写入, 实现最难）b) 按次临时文件（用户点播才写, 量级=单个视频）
       c) 保留 video 副本（现已是 symlink，回退需重新复制）
 - [ ] **语音播放**：同视频，未勘察（可能也是 setDataSource）
-- [x] **P3 删副本**：已完成（2026-11-02）；备份/校验见 `~/tools/wx_assist/workspace/bridge/p3_symlink.sh`
+- [x] **外部副本迁移**：已完成（2026-11-02）；备份/校验见 `~/tools/wx_assist/workspace/bridge/migrate_to_symlink.sh`
 - [ ] **删除链测试**：`BRIDGE_DELETE_TEST.txt` 或安全测试素材
 - [x] **清理删除实现**：已接 BridgeFS.deleteTree；需用户确认后再实际点“清理”
 - [ ] **清理按钮实跑验证**：会删除约 800MB 缓存，执行前确认
-- [ ] **P4**：删手机端旧调试脚本（/data/local/tmp/*.sh 除 wxbridge.sh；App私有目录探针去留）；
+- [ ] **收尾**：删手机端旧调试脚本（/data/local/tmp/*.sh 除 wxbridge.sh；App私有目录探针去留）；
       本地目录再清理一轮；文档定稿；rescue 自愈重建 symlink
 
 ---
@@ -231,15 +230,15 @@ Windows 版 JRE/adb 已删除，不再保留。
 |---|---|
 | `docs/ARCHITECTURE.md` | 桥协议、smali手术清单、FUSE/root 能力模型、全部踩坑记录 |
 | `~/tools/wx_assist/workspace/bridge/wxbridge.sh` | root 桥服务（唯一真源, 含 TREE/find -L/stat -L） |
-| `~/tools/wx_assist/workspace/bridge/rescue_v4.sh` | 启动自愈：诊断 + P3 symlink 检查 + 微信8缓存链接 |
-| `~/tools/wx_assist/workspace/bridge/p3_symlink.sh` | P3 删除副本/建 symlink 的一次性脚本（含校验） |
+| `~/tools/wx_assist/workspace/bridge/rescue_v4.sh` | 启动自愈：诊断 + symlink 检查 + 微信8缓存链接 |
+| `~/tools/wx_assist/workspace/bridge/migrate_to_symlink.sh` | 外部副本迁移/建 symlink 脚本（含校验） |
 | `~/tools/wx_assist/workspace/bridge/wechat8_cache_links.sh` | 微信 8.x 缓存映射（CheckResUpdate/WebviewCache/Android cache） |
 | `~/tools/wx_assist/workspace/bridge/src/.../BridgeFS.java` | App 桥客户端（含 TREE 预取 + 目录缓存） |
 | `~/tools/wx_assist/workspace/bridge/patch_scan.py` | smali 批量手术脚本（幂等+校验） |
 | `~/tools/wx_assist/workspace/bridge/bridge_cmds.txt` + `run_bridge_test.sh` | 协议独立测试套件 |
 | `~/tools/wx_assist/workspace/apktool_out/` | 修改后 APK 工程（smali 已含全部手术 + RESCUE 日志 + :post_loop修复） |
 | `~/tools/wx_assist/workspace/bridge/signed/*.apk` | 最终可安装产物 |
-| `~/tools/wx_assist/workspace/bridge/wxbridge.phone-before-tree.sh` | P2 前手机端旧桥脚本备份 |
+| `~/tools/wx_assist/workspace/bridge/wxbridge.phone-before-tree.sh` | 改造前手机端旧桥脚本备份 |
 | `~/tools/wx_assist/workspace/rescue.keystore` | 签名密钥（重打包必须, alias=rescue, pass=android） |
 | `~/tools/wx_assist/tools/` | jre21-linux, jadx, apktool, ecj, d8(build-tools37), android.jar(platform35) |
 | `~/tools/wx_assist/tools/env.sh` | Linux 原生工具链环境变量（JAVA_HOME/ANDROID_JAR/D8_JAR/...） |
@@ -253,5 +252,5 @@ Windows 版 JRE/adb 已删除，不再保留。
 
 1. **对手机的一切写入/修改/删除，先列清单说明影响，拿到明确"可以"再动手**
 2. PC 侧新工具链下载同样先报备（本次已获批：build-tools + platform35 + ecj）
-3. 微信数据默认只读；删除只发生在用户于 App 内明确操作 或 已批准的 P3/P4 清理
+3. 微信数据默认只读；删除只发生在用户于 App 内明确操作 或 已批准的清理
 4. 每步保留回滚路径（`~/tools/wx_assist/archive/signed9` = 副本方案；`~/tools/wx_assist/workspace/apktool_out` = 任意版本可重建）
