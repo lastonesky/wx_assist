@@ -30,6 +30,7 @@
 │   TREE <path>       → 递归全部条目 ... END（首扫预取）    │
 │   LIST <path>       → "类型\t大小\tmtime\t路径" ... END  │
 │   READ <path>       → "DATA <n>" + n字节原始流           │
+│   PULL <src> <dst>  → OK（root侧cp到App cache）         │
 │   DELETE <path>     → OK | ERR <原因>（文件/空目录）      │
 │ 安全: realpath白名单 + storage→raw归一 + 无eval          │
 │ 生命周期: App死→stdin EOF→自动退出; 重启→开App自愈       │
@@ -54,6 +55,13 @@
 - **不能使用** `find ... -exec stat {} +`：toybox 在大目录树会漏条目
   （image2 54257 项只返回 14744 项）。必须走 `xargs`。
 - **READ 帧**：`DATA <n>\n` + 紧跟精确 n 字节；App 侧 BufferedInputStream 先按行读头、再定量读体。
+- **PULL**：`PULL <src> <dst>`：`src` 走 normalize+realpath+白名单；`dst` **白名单写死**为
+  `/data/data/com.wandoujia.ymir/cache/wxplay/` 下的文件（拒绝 `..`），桥端 `cp -f` + `chmod 0644`。
+  这是视频点播的唯一写入点，且只能写进 App 自己的 cache（不能当任意写原语）。
+  为何不用 READ：视频动辄几十 MB，走管道既占内存（MAX_READ 96MB）又在 UI 线程上慢；
+  root 侧 `cp` 是内核级拷贝，换片基本瞬时。
+- **视频 fd**：`setDataSource(FileDescriptor)` 的 fd 必须是**可 seek 的普通文件**；
+  framework 会 dup 给 media 进程，所以调用后可立即 `close()`。
 - **DELETE**：文件用 `rm -f`，空目录用 `rmdir`；非空目录由 BridgeFS.deleteTree 递归子项后再删。
   清理 Tab 的 `d.a(String,FilenameFilter)` 已改接 `BridgeFS.deleteTree`。
 - **无 root 原版分支**：`BridgeFS.LOCAL_MODE = Build.VERSION.SDK_INT <= 29`；
@@ -64,7 +72,7 @@
   再 YUV420 -> NV21 -> Bitmap。`lastModified` 把 stat 秒转换成毫秒。
 - **路径含 tab 的鲁棒性**：第4段起整段为路径（split limit 语义），文件名无换行是前提（微信文件名=md5，安全）。
 
-## 3. smali 手术清单（33处，已固化在 `~/tools/wx_assist/workspace/apktool_out/`）
+## 3. smali 手术清单（33处 + 视频链 3处，已固化在 `apktool_out/`）
 
 | 类别 | 位置 | 改法 |
 |---|---|---|
@@ -72,9 +80,12 @@
 | 文件大小×1 | `manager/d.smali:222` 调用点 | `d.a(File)J` → `BridgeFS.length(File)J` |
 | 危险File调用×29 | manager/{d,TrashScanner,MmConfig,ab,n,k,m,a}.smali | `invoke-virtual File->M(参)返` → `invoke-static BridgeFS->M(File,参)返`，**描述符必须把 receiver 补为首参** |
 | 启动注入 | `MmApplication` | su执行块 + 探针 + RESCUE Log.i + **循环出口 `if-ge → :post_loop`**（原代码注入段是死代码的bug修复） |
+| 视频点播×1 | `video/VideoPlayCtrl.smali`（`a(String)` 体内） | `setDataSource(String)` → `BridgePlay.open()` + `setDataSource(FileDescriptor)`，失败回退 |
+| 播放器生命周期×2 | `video/VideoPlayView.smali` | 新增 `onDetachedFromWindow`(release) / `onWindowVisibilityChanged`(pause) |
 | 排除 | manager/w,x | App自有目录（缓存mkdirs/导出），保持原生File |
 
 - **加载链**（图片查看器）：`TouchImageView → d.a(String) → BitmapFactory.decodeFile` ← 我们改在 d 体内
+- **播放链**（视频）：`VideoPlayView → VideoPlayCtrl.a(String) → setDataSource(String)` ← 已改为 `BridgePlay.open() + setDataSource(fd)`
 - **列表链**：`d.a(String)根目录 → listFiles(filter n:len>20) → 递归 walk → 模型`
 - **删除链**：照片/视频 `k.java → file.delete()`；清理分类无删除实现（只扫描显示）
 - **`ImageUtil` 的解码点是死代码**（无外部调用者）—— 未动
@@ -122,6 +133,14 @@
 10. `adb install -r` 同签名保 uid；**`--bypass-low-target-sdk-block` 绕 Android17 兼容模式**（不用改targetSdk）
 11. `Runtime.exec("a b c")` 无引号语义 → `su -c sh /path` 的分词坑；全路径 `/system/bin/su` 更稳
 12. uiautomator dump/截图前先 `KEYCODE_WAKEUP`（屏幕会自动锁，tap 会打空）
+13. **`File`/`BitmapFactory` 能改道，`MediaPlayer.setDataSource(String)` 不能**：
+    开文件的是 App 自己的 uid，桥接不进去；必须换 `setDataSource(fd)`。
+14. **原版播放器没有任何暂停/释放调用点**：能播之后必须自己补 View 生命周期钩子，
+    否则返回列表音频继续响（改造前因播不了而潜伏）。
+15. **Windows 下 apktool 解码写 CRLF**：先批量转 LF 再 diff/patch，否则全文件 diff、exact match 失败。
+16. **线上 `classes2.dex` ≠ 本地 `bridge/src/BridgeFS.java`**：改桥客户端以
+    `apktool_out/smali_classes2/BridgeFS.smali` 为准；新增功能请另开类（新 dex），
+    不要为了一个方法去重编既有 dex（本地旧稿已移到 `bridge/src_stale/`）。
 
 ## 7. 性能/度量数据（本机实测）
 

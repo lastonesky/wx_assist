@@ -126,6 +126,26 @@ image2 实际 54257 项，只返回 14744 项。
   `android/support/v4/app/d.a(String,FilenameFilter)`；桥 DELETE 支持空目录 rmdir，
   非空目录由 App 递归子项后删除。**尚未对真实缓存执行清理按钮**。
 
+### 3.6 视频播放 + 播放器生命周期（2026-11-03，已完成）
+
+- **现象**：点视频黑屏不播，返回键正常。
+- **根因**：`VideoPlayCtrl.a(String)` 用 `MediaPlayer.setDataSource(String)`；
+  MediaPlayer 以 **App 自己的 uid** 开文件，而文件在 `/data/data/com.tencent.mm/...`
+  （外部 `video/` 已是 symlink）→ 打不开。
+- **修法**：新增 `BridgePlay`（`classes3.dex`，不动 `BridgeFS`）
+  + 桥端新增 `PULL <src> <dst>`（root 侧直接 cp 到 App cache/wxplay，目标白名单写死）。
+  播放链改为 `BridgePlay.open(path)` → `getFD()` → `setDataSource(FileDescriptor)`；
+  失败自动回退原路径。
+- **顺带修的生命周期 bug**：原版没有任何 `onPause/onDestroy` 调用点，
+  视频能播后返回列表音频仍在响。`VideoPlayView` 补 `onDetachedFromWindow`（release）
+  与 `onWindowVisibilityChanged`（不可见时 pause）。
+- **实机验证**（Android 17，澎湃OS4）：
+  `AudioTrack: start ... com.wandoujia.ymir` → 画面正常（`c2.qti.hevc.decoder`）；
+  返回列表 → `MediaPlayer._release native called` + `AudioTrack: stop`；
+  按 Home → `NuPlayerDriver: pause`；无 FATAL。
+- **重建**：`bash bridge/build_apk.sh`（ecj 编译 BridgePlay → d8 → apktool b →
+  注入 classes3.dex → 签名），smali 手术脚本 `bridge/patch_video.py`（幂等）。
+
 **修完后的重建管线（Arch Linux 原生，照抄即可）**：
 ```bash
 cd ~/tools/wx_assist
@@ -159,10 +179,11 @@ adb install -r -g --bypass-low-target-sdk-block \
 
 ## 4. 其余待办（收尾）
 
-- [ ] **视频播放**：`VideoPlayCtrl:533 MediaPlayer.setDataSource(String)` 单点未接桥。
-      方案候选（需用户拍板）：a) fd流式（零写入, 实现最难）b) 按次临时文件（用户点播才写, 量级=单个视频）
-      c) 保留 video 副本（现已是 symlink，回退需重新复制）
+- [x] **视频播放**：`BridgePlay` + 桥 `PULL` + `setDataSource(FileDescriptor)`（2026-11-03 完成）
+- [x] **播放器生命周期**：返回列表/切后台停声（2026-11-03 完成）
 - [ ] **语音播放**：同视频，未勘察（可能也是 setDataSource）
+- [ ] **点播 cache 目录**：`/data/data/.../cache/wxplay/` 只保留当前一个视频，
+      异常退出可能残留，可在启动自愈时清一次（可选）
 - [x] **外部副本迁移**：已完成（2026-11-02）；备份/校验见 `~/tools/wx_assist/workspace/bridge/migrate_to_symlink.sh`
 - [ ] **删除链测试**：`BRIDGE_DELETE_TEST.txt` 或安全测试素材
 - [x] **清理删除实现**：已接 BridgeFS.deleteTree；需用户确认后再实际点“清理”
@@ -233,7 +254,10 @@ Windows 版 JRE/adb 已删除，不再保留。
 | `~/tools/wx_assist/workspace/bridge/rescue_v4.sh` | 启动自愈：诊断 + symlink 检查 + 微信8缓存链接 |
 | `~/tools/wx_assist/workspace/bridge/migrate_to_symlink.sh` | 外部副本迁移/建 symlink 脚本（含校验） |
 | `~/tools/wx_assist/workspace/bridge/wechat8_cache_links.sh` | 微信 8.x 缓存映射（CheckResUpdate/WebviewCache/Android cache） |
-| `~/tools/wx_assist/workspace/bridge/src/.../BridgeFS.java` | App 桥客户端（含 TREE 预取 + 目录缓存） |
+| `~/tools/wx_assist/workspace/bridge/src/.../BridgeFS.java` | App 桥客户端（含 TREE 预取 + 目录缓存）**注意：本地此文件是旧稿，最新版在 `apktool_out/smali_classes2/`** |
+| `~/tools/wx_assist/workspace/bridge/src/.../BridgePlay.java` | 视频点播搬运（独立 `classes3.dex`，含 PULL/缓存/回退） |
+| `~/tools/wx_assist/workspace/bridge/patch_video.py` | 视频播放链 + 播放器生命周期 smali 手术（幂等） |
+| `~/tools/wx_assist/workspace/bridge/build_apk.sh` | 本机（Windows/Git Bash）一键重建：BridgePlay → d8 → apktool → 注入 classes3.dex → 签名 |
 | `~/tools/wx_assist/workspace/bridge/patch_scan.py` | smali 批量手术脚本（幂等+校验） |
 | `~/tools/wx_assist/workspace/bridge/bridge_cmds.txt` + `run_bridge_test.sh` | 协议独立测试套件 |
 | `~/tools/wx_assist/workspace/apktool_out/` | 修改后 APK 工程（smali 已含全部手术 + RESCUE 日志 + :post_loop修复） |

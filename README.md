@@ -9,6 +9,7 @@
 - Android 11–17：root 桥（KernelSU/Magisk），零复制读取微信内部数据
 - 一次 TREE 扫描、微信 8.0.x 新旧目录兼容
 - WXGF/HEVC 图片解码、日期修复、字号调整、隐藏失效升级入口
+- 视频点播可播（root 桥搬到 App 私有 cache 后走 fd，不再黑屏）；退出/切后台自动停播
 - 外部媒体副本改为内部 symlink，启动自愈
 - 清理统计适配微信 8.x；收藏夹不参与删除
 
@@ -33,5 +34,5 @@ Android 14 以下可去掉 `--bypass-low-target-sdk-block`。
 
 ```text
 微信助手.apk        sha256 44a15034ec50a9fc6131050ddb5b9038118d5911ce30615b1621765058568f74
-微信助手-改造版.apk  sha256 9884b748502bfbfa2c94e771798c53c536eddc95e258dc63ae806840b399aa24
+微信助手-改造版.apk  sha256 786b9559d513f3686885a2beeda5eaa186c11c1cd47e8ad8a37a5b883e4d820b
 ```
