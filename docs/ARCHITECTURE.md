@@ -7,34 +7,42 @@
 ## 1. 总体架构
 
 ```
-┌─ 微信助手 App进程 (uid 10282, untrusted_app_25) ────────┐
-│ MmApplication.attachBaseContext                         │
-│   ├─ su -c /data/local/tmp/rescue.sh   (v3纯诊断,自愈)   │
-│   └─ sh files/appprobe.sh             (App身份探针)      │
-│                                                         │
-│ 扫描/清理/加载 改道:                                     │
-│   File.listFiles/exists/isDirectory/length/lastModified │
-│   File.delete / BitmapFactory.decodeFile                │
-│        ↓ invoke-static                                   │
-│   BridgeFS (classes2.dex, 7.7KB)                        │
-│     · HashMap 缓存 {path → type,size,mtime}             │
-│     · synchronized 单线程串行 (LOCK)                     │
-│     · 懒加载 ensure(): Runtime.exec("su -c sh ...")      │
-│     · 兜底: 桥失败/白名单外 → 普通 File API (App自有目录) │
-└──────────────┬──────────────────────────────────────────┘
-               │ stdin/stdout 管道 (无socket/无端口/零监听)
-               │ 协议: 文本行命令 + READ二进制帧
-┌──────────────▼──────────────────────────────────────────┐
-│ root 子进程 (uid 0, u:r:ksu:s0)  wxbridge.sh            │
-│   PING              → OK PONG                           │
-│   TREE <path>       → 递归全部条目 ... END（首扫预取）    │
-│   LIST <path>       → "类型\t大小\tmtime\t路径" ... END  │
-│   READ <path>       → "DATA <n>" + n字节原始流           │
-│   PULL <src> <dst>  → OK（root侧cp到App cache）         │
-│   DELETE <path>     → OK | ERR <原因>（文件/空目录）      │
-│ 安全: realpath白名单 + storage→raw归一 + 无eval          │
-│ 生命周期: App死→stdin EOF→自动退出; 重启→开App自愈       │
-└─────────────────────────────────────────────────────────┘
+┌─ 微信助手 App进程 (uid 10282, untrusted_app_25) ─────────────────┐
+│ MmApplication.attachBaseContext                                  │
+│   ├─ su -c /data/local/tmp/rescue.sh    (v3 纯诊断/自愈)         │
+│   └─ sh files/appprobe.sh              (App 身份探针)            │
+│                                                                  │
+│ 扫描/清理/加载 改道:                                             │
+│   File.listFiles/exists/isDirectory/length/lastModified          │
+│   File.delete / BitmapFactory.decodeFile                         │
+│        ↓ invoke-static                                           │
+│   BridgeFS (classes2.dex)                                        │
+│     · HashMap 缓存 {path → type,size,mtime}                      │
+│     · synchronized 单线程串行 (LOCK)                             │
+│     · 懒加载 ensure(): Runtime.exec("su -c sh ...")              │
+│     · 兜底: 桥失败/白名单外 → 普通 File API (App 自有目录)       │
+│                                                                  │
+│ 视频点播改道 (classes3.dex, 第二条独立桥连接):                   │
+│   MediaPlayer --GET/Range--> 127.0.0.1:<随机端口> (只绑回环)     │
+│        ↑ URL 里只有 token, 不带真实路径                          │
+│        └─ STAT/RANGE 按偏移取 1MB 窗口, 6 窗 LRU + 顺序预取      │
+│   回退: PULL 复制到 cache + setDataSource(fd) → 原 setDataSource │
+└──────────────┬───────────────────────────────────────────────────┘
+               │ stdin/stdout 管道 (无 socket / 无端口 / 无监听)
+               │ 协议: 文本行命令 + READ/RANGE 二进制帧
+┌──────────────▼───────────────────────────────────────────────────┐
+│ root 子进程 (uid 0, u:r:ksu:s0)  wxbridge.sh                     │
+│   PING                  → OK PONG                                │
+│   TREE <path>           → 递归整棵子树 ... END (首扫预取)        │
+│   LIST <path>           → "类型	大小	mtime	路径" ... END         │
+│   READ <path>           → "DATA <n>" + n 字节 (图片)             │
+│   STAT <path>           → "SIZE <n>"                             │
+│   RANGE <p> <off> <len> → "DATA <n>" + n 字节 (视频按偏移)       │
+│   PULL <src> <dst>      → OK (旧方案: cp 到 App cache)           │
+│   DELETE <path>         → OK (rm -f 文件 / rmdir 空目录)         │
+│ 安全: realpath 白名单 + storage→raw 归一 + 无 eval               │
+│ 生命周期: App 死 → stdin EOF → 自动退出; 重启 → App 自愈         │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ## 2. 协议与路径规则
@@ -55,7 +63,12 @@
 - **不能使用** `find ... -exec stat {} +`：toybox 在大目录树会漏条目
   （image2 54257 项只返回 14744 项）。必须走 `xargs`。
 - **READ 帧**：`DATA <n>\n` + 紧跟精确 n 字节；App 侧 BufferedInputStream 先按行读头、再定量读体。
-- **PULL**：`PULL <src> <dst>`：`src` 走 normalize+realpath+白名单；`dst` **白名单写死**为
+- **STAT / RANGE**（视频流式代理）：`STAT <path>` → `SIZE <n>`；
+  `RANGE <path> <off> <len>` → `DATA <n>` + n 字节，实现为
+  `dd if=… iflag=skip_bytes,count_bytes skip=off count=len bs=65536`
+  （toybox 0.8.13 已实测支持；单次 dd fork+exec ≈ 10–17ms）。
+  越界自动裁剪到文件尾，起点越界回 `DATA 0`，非数字参数回 `ERR bad-num`。
+- **PULL**（旧方案，现仅 fd 回退时使用）：`PULL <src> <dst>`：`src` 走 normalize+realpath+白名单；`dst` **白名单写死**为
   `/data/data/com.wandoujia.ymir/cache/wxplay/` 下的文件（拒绝 `..`），桥端 `cp -f` + `chmod 0644`。
   这是视频点播的唯一写入点，且只能写进 App 自己的 cache（不能当任意写原语）。
   为何不用 READ：视频动辄几十 MB，走管道既占内存（MAX_READ 96MB）又在 UI 线程上慢；
@@ -80,8 +93,8 @@
 | 文件大小×1 | `manager/d.smali:222` 调用点 | `d.a(File)J` → `BridgeFS.length(File)J` |
 | 危险File调用×29 | manager/{d,TrashScanner,MmConfig,ab,n,k,m,a}.smali | `invoke-virtual File->M(参)返` → `invoke-static BridgeFS->M(File,参)返`，**描述符必须把 receiver 补为首参** |
 | 启动注入 | `MmApplication` | su执行块 + 探针 + RESCUE Log.i + **循环出口 `if-ge → :post_loop`**（原代码注入段是死代码的bug修复） |
-| 视频点播×1 | `video/VideoPlayCtrl.smali`（`a(String)` 体内） | `setDataSource(String)` → `BridgePlay.open()` + `setDataSource(FileDescriptor)`，失败回退 |
-| 播放器生命周期×2 | `video/VideoPlayView.smali` | 新增 `onDetachedFromWindow`(release) / `onWindowVisibilityChanged`(pause) |
+| 视频点播×1 | `video/VideoPlayCtrl.smali`（`a(String)` 体内） | 三级回退：`BridgePlay.openUrl()` → `setDataSource(http URL)`；否则 `open()`+`setDataSource(fd)`；否则原 String |
+| 播放器生命周期×2 | `video/VideoPlayView.smali` | 新增 `onDetachedFromWindow`(release + 关代理) / `onWindowVisibilityChanged`(pause) |
 | 排除 | manager/w,x | App自有目录（缓存mkdirs/导出），保持原生File |
 
 - **加载链**（图片查看器）：`TouchImageView → d.a(String) → BitmapFactory.decodeFile` ← 我们改在 d 体内

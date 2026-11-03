@@ -126,24 +126,36 @@ image2 实际 54257 项，只返回 14744 项。
   `android/support/v4/app/d.a(String,FilenameFilter)`；桥 DELETE 支持空目录 rmdir，
   非空目录由 App 递归子项后删除。**尚未对真实缓存执行清理按钮**。
 
-### 3.6 视频播放 + 播放器生命周期（2026-11-03，已完成）
+### 3.6 视频播放（HTTP 流式代理）+ 播放器生命周期（2026-11-03，已完成）
 
 - **现象**：点视频黑屏不播，返回键正常。
 - **根因**：`VideoPlayCtrl.a(String)` 用 `MediaPlayer.setDataSource(String)`；
   MediaPlayer 以 **App 自己的 uid** 开文件，而文件在 `/data/data/com.tencent.mm/...`
   （外部 `video/` 已是 symlink）→ 打不开。
-- **修法**：新增 `BridgePlay`（`classes3.dex`，不动 `BridgeFS`）
-  + 桥端新增 `PULL <src> <dst>`（root 侧直接 cp 到 App cache/wxplay，目标白名单写死）。
-  播放链改为 `BridgePlay.open(path)` → `getFD()` → `setDataSource(FileDescriptor)`；
-  失败自动回退原路径。
+- **修法（当前方案：HTTP 流式代理，不落盘）**：新增 `BridgeHttp`（`classes3.dex`，不动 `BridgeFS`）
+  + 桥端新增 `STAT`/`RANGE`（`dd iflag=skip_bytes,count_bytes`）。
+  App 内起一个**只绑 127.0.0.1** 的 HTTP 服务，`MediaPlayer` 直接播
+  `http://127.0.0.1:<随机端口>/v/<token>`，字节按 1MB 窗口向桥要，
+  6 窗 LRU + 顺序预取 + 起播预热（头部/moov 尾部）。
+  URL 里只有 token（路径 hashCode），不暴露真实路径；桥端仍走 realpath+白名单。
+- **三级回退**：`openUrl()`（HTTP 代理）→ `open()`（PULL 复制到 cache + `setDataSource(fd)`）
+  → 原 `setDataSource(String)`。
+- **为何不用 MediaDataSource（API23+ 回调）**：两者等价；HTTP 方案不需要额外 API 守卫，
+  且能直接复用播放器自带的 Range/read-ahead。App 清单原本就有 INTERNET（未新增权限）。
 - **顺带修的生命周期 bug**：原版没有任何 `onPause/onDestroy` 调用点，
   视频能播后返回列表音频仍在响。`VideoPlayView` 补 `onDetachedFromWindow`（release）
   与 `onWindowVisibilityChanged`（不可见时 pause）。
 - **实机验证**（Android 17，澎湃OS4）：
-  `AudioTrack: start ... com.wandoujia.ymir` → 画面正常（`c2.qti.hevc.decoder`）；
-  返回列表 → `MediaPlayer._release native called` + `AudioTrack: stop`；
-  按 Home → `NuPlayerDriver: pause`；无 FATAL。
-- **重建**：`bash bridge/build_apk.sh`（ecj 编译 BridgePlay → d8 → apktool b →
+  `MediaHTTP: connect success` / `getMIMEType-: video/mp4` / `MediaHTTPConnection: getSize`
+  → 画面正常（NuPlayer + `c2.qti.hevc.decoder`），`cache/` 下无任何视频副本；
+  返回列表 → `MediaPlayer._release native called` + `AudioTrack: stop` + 代理关闭；
+  按 Home → `NuPlayerDriver: pause`；“下一段”切视频 → 新建 HTTP 连接并正常播放；无 FATAL。
+- **实测数据**：`connect success` → `video preroll complete` ≈ 127–136ms；
+  一次 dd（1MB 窗口）≈ 10–17ms，8MB 读取 ≈ 7ms。
+- **已知现象（非本次引入）**：起播时 `video late by ~0.13s` 掉 3–4 帧。
+  A/B 对照过：走 cache 副本（纯本地 fd）也是同样的 0.13s/3–4 帧 →
+  属这个 2016 老播放器的 preroll 行为，与传输层无关。
+- **重建**：`bash bridge/build_apk.sh`（ecj 编译 BridgePlay+BridgeHttp → d8 → apktool b →
   注入 classes3.dex → 签名），smali 手术脚本 `bridge/patch_video.py`（幂等）。
 
 **修完后的重建管线（Arch Linux 原生，照抄即可）**：
@@ -179,7 +191,7 @@ adb install -r -g --bypass-low-target-sdk-block \
 
 ## 4. 其余待办（收尾）
 
-- [x] **视频播放**：`BridgePlay` + 桥 `PULL` + `setDataSource(FileDescriptor)`（2026-11-03 完成）
+- [x] **视频播放**：HTTP 流式代理（`BridgeHttp` + 桥 `STAT`/`RANGE`），不落盘（2026-11-03 完成）
 - [x] **播放器生命周期**：返回列表/切后台停声（2026-11-03 完成）
 - [ ] **语音播放**：同视频，未勘察（可能也是 setDataSource）
 - [ ] **点播 cache 目录**：`/data/data/.../cache/wxplay/` 只保留当前一个视频，
@@ -255,7 +267,8 @@ Windows 版 JRE/adb 已删除，不再保留。
 | `~/tools/wx_assist/workspace/bridge/migrate_to_symlink.sh` | 外部副本迁移/建 symlink 脚本（含校验） |
 | `~/tools/wx_assist/workspace/bridge/wechat8_cache_links.sh` | 微信 8.x 缓存映射（CheckResUpdate/WebviewCache/Android cache） |
 | `~/tools/wx_assist/workspace/bridge/src/.../BridgeFS.java` | App 桥客户端（含 TREE 预取 + 目录缓存）**注意：本地此文件是旧稿，最新版在 `apktool_out/smali_classes2/`** |
-| `~/tools/wx_assist/workspace/bridge/src/.../BridgePlay.java` | 视频点播搬运（独立 `classes3.dex`，含 PULL/缓存/回退） |
+| `~/tools/wx_assist/workspace/bridge/src/.../BridgePlay.java` | 视频点播入口（三级回退：HTTP 代理 → PULL+fd → 原路径） |
+| `~/tools/wx_assist/workspace/bridge/src/.../BridgeHttp.java` | loopback HTTP 代理（Range/206、1MB 窗口、6 窗 LRU、顺序预取） |
 | `~/tools/wx_assist/workspace/bridge/patch_video.py` | 视频播放链 + 播放器生命周期 smali 手术（幂等） |
 | `~/tools/wx_assist/workspace/bridge/build_apk.sh` | 本机（Windows/Git Bash）一键重建：BridgePlay → d8 → apktool → 注入 classes3.dex → 签名 |
 | `~/tools/wx_assist/workspace/bridge/patch_scan.py` | smali 批量手术脚本（幂等+校验） |
